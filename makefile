@@ -13,10 +13,6 @@
 MFEM_DIR ?= /home/han/Code/MFEM/mfem
 MFEM_BUILD_DIR ?= /home/han/Code/MFEM/mfem
 SRC = ./
-# dir for *.o
-OBJ = ./obj/
-# dir for lib
-LIB = ./lib/
 CONFIG_MK = $(MFEM_BUILD_DIR)/config/config.mk
 # Use the MFEM install directory
 # MFEM_INSTALL_DIR = ../mfem
@@ -25,7 +21,7 @@ CONFIG_MK = $(MFEM_BUILD_DIR)/config/config.mk
 MFEM_LIB_FILE = mfem_is_not_built
 -include $(CONFIG_MK)
 
-SEQ_EXAMPLES = HeatConduction
+SEQ_EXAMPLES = HeatConduction GMRES
 
 ifeq ($(MFEM_USE_MPI),NO)
    EXAMPLES = $(SEQ_EXAMPLES)
@@ -49,20 +45,9 @@ SUBDIRS_TPRINT = $(addsuffix /test-print,$(SUBDIRS))
 
 # Replace the default implicit rule for *.cpp files
 %: $(SRC)%.cpp $(MFEM_LIB_FILE) $(CONFIG_MK)
-	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(MFEM_LIBS)
-
-# Replace the default implicit rule for *.hpp files
-$(OBJ)%.o: $(SRC)%.hpp $(MFEM_LIB_FILE) $(CONFIG_MK)
-	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(MFEM_LIBS)
-
-# define src and obj for lib files
-LIB_SRCS = $(wildcard $(SRC)*.hpp)
-LIB_OBJS = $(patsubst $(SRC)%.hpp,$(OBJ)%.o,$(LIB_SRCS))
-$(LIB)MY_MFEM_LIB.a: $(LIB_OBJS)
-	ar rcs $@ $^
+	$(MFEM_CXX) $(MFEM_FLAGS) $< -o $@ $(MFEM_LIBS) -g
 
 all: $(EXAMPLES) $(SUBDIRS_ALL)
-lib: $(LIB)MY_MFEM_LIB.a
 
 .PHONY: $(SUBDIRS_ALL) $(SUBDIRS_TEST) $(SUBDIRS_CLEAN) $(SUBDIRS_TPRINT)
 $(SUBDIRS_ALL) $(SUBDIRS_TEST) $(SUBDIRS_CLEAN):
@@ -71,68 +56,14 @@ $(SUBDIRS_TPRINT):
 	@$(MAKE) -C $(@D) $(@F)
 
 # Additional dependencies
-HeatConduction: $(SRC)HeatConduction.hpp
+GMRES: $(SRC)GMRES.hpp
+HeatConduction: $(SRC)GMRES.hpp
 
 
 MFEM_TESTS = EXAMPLES
 include $(MFEM_TEST_MK)
 test: $(SUBDIRS_TEST)
 test-print: $(SUBDIRS_TPRINT)
-
-# Testing: Parallel vs. serial runs
-RUN_MPI = $(MFEM_MPIEXEC) $(MFEM_MPIEXEC_NP) $(MFEM_MPI_NP)
-%-test-par: %
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel example)
-%-test-seq: %
-	@$(call mfem-test,$<,, Serial example)
-%-test-par-cuda: %
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel CUDA example,-d cuda)
-%-test-seq-cuda: %
-	@$(call mfem-test,$<,, Serial CUDA example,-d cuda)
-%-test-par-hip: %
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel HIP example,-d hip)
-%-test-seq-hip: %
-	@$(call mfem-test,$<,, Serial HIP example,-d hip)
-
-# Testing: Specific execution options
-ex0-test-seq: ex0
-	@$(call mfem-test,$<,, Serial example,,1)
-ex0p-test-par: ex0p
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel example,,1)
-ex1-test-seq: ex1
-	@$(call mfem-test,$<,, Serial example)
-ex1p-test-par: ex1p
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel example)
-ex10-test-seq: ex10
-	@$(call mfem-test,$<,, Serial example,-tf 5)
-ex10p-test-par: ex10p
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel example,-tf 5)
-ex15-test-seq: ex15
-	@$(call mfem-test,$<,, Serial example,-e 1)
-ex15p-test-par: ex15p
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel example,-e 1)
-ex27-test-seq: ex27
-	@$(call mfem-test,$<,, Serial example,-dg)
-ex27p-test-par: ex27p
-	@$(call mfem-test,$<, $(RUN_MPI), Parallel example,-dg)
-# Testing: optional tests
-ifeq ($(MFEM_USE_STRUMPACK),YES)
-ex11p-test-strumpack: ex11p
-	@$(call mfem-test,$<, $(RUN_MPI), STRUMPACK example,--strumpack)
-test-par-YES: ex11p-test-strumpack
-endif
-ifeq ($(MFEM_USE_SUPERLU),YES)
-ex11p-test-superlu: ex11p
-	@$(call mfem-test,$<, $(RUN_MPI), SuperLU_DIST example,--superlu)
-test-par-YES: ex11p-test-superlu
-endif
-ifeq ($(MFEM_USE_MKL_CPARDISO),YES)
-ex11p-test-cpardiso: ex11p
-	@$(call mfem-test,$<, $(RUN_MPI), MKL_CPARDISO example,--cpardiso)
-test-par-YES: ex11p-test-cpardiso
-endif
-
-# Testing: "test" target and mfem-test* variables are defined in config/test.mk
 
 # Generate an error message if the MFEM library is not built and exit
 $(MFEM_LIB_FILE):
