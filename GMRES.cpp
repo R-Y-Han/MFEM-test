@@ -57,11 +57,6 @@ protected:
         u = u_;
         dt = dt_;
       }
-      ~DiscreteForm()
-      {
-        delete Mmat;
-        delete Dmat;
-      }
       virtual void Mult(const Vector &k, Vector &y) const override
       {
         y.SetSize(k.Size());
@@ -147,6 +142,8 @@ int main(int argc, char *argv[])
                  "Save data files for VisIt (visit.llnl.gov) visualization.");
   args.AddOption(&vis_steps, "-vs", "--visualization-steps",
                  "Visualize every n-th timestep.");
+  args.AddOption(&IP, "-IP", "--IP",
+                 "Interior Penalty parameter.");
   args.Parse();
   if (!args.Good())
   {
@@ -362,7 +359,7 @@ ConductionOperator::ConductionOperator(FiniteElementSpace &f,
   T_solver.SetRelTol(rel_tol);
   T_solver.SetAbsTol(0.0);
   T_solver.SetMaxIter(50);
-  T_solver.SetPrintLevel(1);
+  T_solver.SetPrintLevel(0);
   T_solver.SetMaxKrylovIter(100);
 
   SetParameters(u);

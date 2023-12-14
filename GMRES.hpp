@@ -26,7 +26,7 @@ protected:
   mutable DSmoother B_prec;
 
   void GetBeta(const Vector &f, const Vector &x, const int l) const;
-  void GetKrylovBasis(const Vector &r0, const Vector &xk, const int l) const;
+  void GetKrylovBasis(const Vector &x, const Vector &r, const int l) const;
   void JacobiMult(const Vector &x, const Vector &y, Vector &Jy) const;
 
 public:
@@ -116,16 +116,7 @@ void NonlinearGMRES::Mult(const Vector &x, Vector &y) const
         Krylov_converged = true;
         break;
       }
-      GetKrylovBasis(r0, y, l);
-      if (k > 0) {
-        cout << "round " << l << "\n";
-        for (int d = 0; d <= basis_level; d++) {
-          cout << "basis level " << d << "\n";
-          Vector a;
-          Jr.GetRow(d, a);
-          cout << Norm(a) << "\n";
-        }
-      }
+      GetKrylovBasis(y, r0, l);
       GetBeta(fk, y, l);
 
       // Get dx_kl = dx_0 + sum_{m=0}^{l-1} beta_m J_k^m(r0)
@@ -143,8 +134,8 @@ void NonlinearGMRES::Mult(const Vector &x, Vector &y) const
       MFEM_ASSERT(IsFinite(norm_Krylov), "Krylov norm = " << norm_Krylov);
       if (print_options.iterations) {
         mfem::out << "\t|-" << l << ". Krylov iteration " << std::setw(2) << l
-                  << " : ||f(x_k) + J_k(dx_kl)|| = "
-                  << norm_Krylov << '\n';
+                  << " : ||f(x_k) + J_k(dx_kl)|| / ||f(x_k)|| = "
+                  << norm_Krylov / norm << '\n';
       }
       Monitor(l, norm_Krylov, z, y);
 
@@ -159,7 +150,7 @@ void NonlinearGMRES::Mult(const Vector &x, Vector &y) const
       // break if Krylov basis has 0 term
       Vector bl;
       Jr.GetRow(basis_level, bl);
-      if (Norm(bl) <= 1e-9) {
+      if (Norm(bl) <= 1e-6) {
         break;
       }
     }
@@ -185,6 +176,7 @@ void NonlinearGMRES::JacobiMult(const Vector &x, const Vector &y, Vector &Jy) co
   }
   double sum = std::max(x.Sum(), 1e-6);
   double eps = eta * sum / (size * norm_y);
+  eps = std::max(1e-6, eps);
 
   // Jy = [f(x+ eps y) - f(x)] / eps
   Vector a(size), f(size);
@@ -195,12 +187,12 @@ void NonlinearGMRES::JacobiMult(const Vector &x, const Vector &y, Vector &Jy) co
   Jy /= eps;
 }
 
-void NonlinearGMRES::GetKrylovBasis(const Vector &r0, const Vector &x, const int l) const
+void NonlinearGMRES::GetKrylovBasis(const Vector &x, const Vector &r, const int l) const
 {
   // Jr(m) = J^m (r0)
   if (!Krylov_basis_updated) {
     Jr = 0.0;
-    Jr.SetRow(0, r0);
+    Jr.SetRow(0, r);
     basis_level = 0;
   }
   Vector a, b;
@@ -233,13 +225,11 @@ void NonlinearGMRES::GetBeta(const Vector &f, const Vector &x, const  int l) con
       M.Set(i,j, b1 * b2);
       // M(i,j) = b1 * b2;
     }
-    
+
     B(i) = -1. * (b1 * c);
   }
 
   M.Finalize();
-
-  // if (Norm(B) < 1e-9) { beta = 0.; return ; }
 
   if (l <= 10) {
     DenseMatrix Mden, Minv;
