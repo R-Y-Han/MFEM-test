@@ -46,10 +46,9 @@ public:
   {
     y.SetSize(k.Size());
     z.SetSize(k.Size());
-    // y = (M + dt D) k - D u
+    // y = (M + dt D) k + D u
     SparseMatrix *F;
     F = Add(1.0, *Mmat, dt, *Dmat);
-    Mmat->Mult(k, y);
     F->Mult(k, y);
     Dmat->Mult(u, z);
     add(y, z, y);
@@ -356,9 +355,9 @@ ConductionOperator::ConductionOperator(FiniteElementSpace &f,
   T_solver.iterative_mode = false;
   T_solver.SetRelTol(rel_tol);
   T_solver.SetAbsTol(0.0);
-  T_solver.SetMaxIter(50);
+  T_solver.SetMaxIter(15);
   T_solver.SetPrintLevel(0);
-  T_solver.SetMaxKrylovIter(100);
+  T_solver.SetMaxKrylovIter(10);
 
   SetParameters(u);
 }
@@ -378,10 +377,6 @@ void ConductionOperator::ImplicitSolve(const double dt,
    }
    MFEM_VERIFY(dt == current_dt, ""); // SDIRK methods use the same dt
    T_solver.Mult(u, du_dt);
-  //  for (int i = 0; i < fespace.GetFE(0)->GetDof(); i++) {
-  //   cout << du_dt(i) * dt << "\t";
-  //  }
-  //  cout<<"\n";
 }
 
 void ConductionOperator::SetParameters(const Vector &u)
