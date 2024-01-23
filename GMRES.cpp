@@ -29,6 +29,35 @@ public:
   }
 };
 
+class DiscreteForm : public Operator
+{
+private:
+  SparseMatrix *Mmat, *Dmat;
+  Vector u;
+  double dt;
+
+  mutable Vector z; // auxiliary vector
+public:
+  DiscreteForm(SparseMatrix &M, SparseMatrix &D,
+               Vector &u_, const double dt_)
+    : Operator(M.Height()), Mmat(&M), Dmat(&D), dt(dt_)
+  { u = u_; }
+  virtual void Mult(const Vector &k, Vector &y) const override
+  {
+    y.SetSize(k.Size());
+    z.SetSize(k.Size());
+    // y = (M + dt D) k - D u
+    SparseMatrix *F;
+    F = Add(1.0, *Mmat, dt, *Dmat);
+    Mmat->Mult(k, y);
+    F->Mult(k, y);
+    Dmat->Mult(u, z);
+    add(y, z, y);
+    delete F;
+    F = NULL;
+  }
+};
+
 class ConductionOperator : public TimeDependentOperator
 {
 protected:
@@ -39,37 +68,6 @@ protected:
   BilinearForm *D;
 
   SparseMatrix Mmat, Dmat;
-  class DiscreteForm : public Operator
-  {
-    private:
-      SparseMatrix *Mmat, *Dmat;
-      Vector u;
-      double dt;
-
-      mutable Vector z; // auxiliary vector
-    public:
-      DiscreteForm(SparseMatrix &M, SparseMatrix &D,
-                   Vector &u_, const double dt_)
-        : Operator(M.Height())
-      {
-        Mmat = &M;
-        Dmat = &D;
-        u = u_;
-        dt = dt_;
-      }
-      virtual void Mult(const Vector &k, Vector &y) const override
-      {
-        y.SetSize(k.Size());
-        z.SetSize(k.Size());
-        // y = (M + dt D) k - D u
-        SparseMatrix *F;
-        F = Add(1.0, *Mmat, dt, *Dmat);
-        Mmat->Mult(k, y);
-        F->Mult(k, y);
-        Dmat->Mult(u, z);
-        add(y, z, y);
-      }
-  };
   DiscreteForm *T;
   double current_dt;
 
