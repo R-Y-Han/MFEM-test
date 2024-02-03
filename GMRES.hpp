@@ -39,7 +39,7 @@ public:
     B_solver.SetRelTol(1e-8);
     B_solver.SetAbsTol(0.0);
     B_solver.SetMaxIter(30);
-    B_solver.SetPrintLevel(0);
+    B_solver.SetPrintLevel(-1);
     B_solver.SetPreconditioner(B_prec);
   }
 

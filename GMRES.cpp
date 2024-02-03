@@ -6,6 +6,11 @@
 using namespace std;
 using namespace mfem;
 
+const double cv = 1.0;
+double kappa = 0.1;
+double IP = 10.;
+double P_ = 0.;
+
 
 class NonlinearEq : public Operator
 {
@@ -52,8 +57,29 @@ public:
     F->Mult(k, y);
     Dmat->Mult(u, z);
     add(y, z, y);
+z.Print();
+exit(0);
     delete F;
     F = NULL;
+  }
+};
+// Coefficient for diffusion
+class ConductionCoefficient : public Coefficient
+{
+private:
+  GridFunction *Temperature;
+  int Component;
+
+public:
+  ConductionCoefficient(GridFunction *T_, int comp = 1)
+  { Temperature = T_; Component = comp; }
+  virtual double Eval(ElementTransformation &T,
+                      const IntegrationPoint &ip)
+  {
+   // return kappa;
+    double Tt = Temperature->GetValue(T, ip, Component);
+   //  return 4. * kappa * pow(Tt,3);
+   return kappa * pow(Tt,2);
   }
 };
 
@@ -89,12 +115,6 @@ public:
 
    virtual ~ConductionOperator();
 };
-
-const int dim = 2;
-const double cv = 1.0;
-double kappa = 0.1;
-double IP = 10.;
-double P_ = 0.;
 
 double InitialTemperature(const Vector &x);
 double ComputeK(const double &T);
@@ -355,9 +375,9 @@ ConductionOperator::ConductionOperator(FiniteElementSpace &f,
   T_solver.iterative_mode = false;
   T_solver.SetRelTol(rel_tol);
   T_solver.SetAbsTol(0.0);
-  T_solver.SetMaxIter(15);
+  T_solver.SetMaxIter(100);
   T_solver.SetPrintLevel(0);
-  T_solver.SetMaxKrylovIter(10);
+  T_solver.SetMaxKrylovIter(50);
 
   SetParameters(u);
 }
@@ -381,21 +401,18 @@ void ConductionOperator::ImplicitSolve(const double dt,
 
 void ConductionOperator::SetParameters(const Vector &u)
 {
-   GridFunction K_gf(&fespace);
-   K_gf.SetFromTrueDofs(u);
-   for (int i = 0; i < K_gf.Size(); i++)
-   {
-      // K_gf(i) = kappa + alpha*K_gf(i);
-      K_gf(i) = ComputeK(K_gf(i));
-   }
+   Vector *sptr = const_cast<Vector*>(&u);
+   GridFunction T_gf;
+   T_gf.MakeRef(&fespace, *sptr, 0);
+   ConductionCoefficient coeff_dt(&T_gf);
 
    delete D;
    D = new BilinearForm(&fespace);
 
-   GridFunctionCoefficient u_coeff(&K_gf);
+   // GridFunctionCoefficient u_coeff(&K_gf);
 
-   D->AddDomainIntegrator(new DiffusionIntegrator(u_coeff));
-   D->AddInteriorFaceIntegrator(new DGDiffusionIntegrator(u_coeff, -1, IP));
+   // D->AddDomainIntegrator(new DiffusionIntegrator(coeff_dt));
+   D->AddInteriorFaceIntegrator(new DGDiffusionIntegrator(coeff_dt, -1, IP));
    D->Assemble();
    D->Finalize();
    D->FormSystemMatrix(ess_tdof_list, Dmat);
@@ -415,11 +432,11 @@ double InitialTemperature(const Vector &x)
 {
    if (fabs(x(0)) < 0.1 && fabs(x(1)) < 0.1)
    {
-      return 10.0;
+      return 5.0;
    }
    else
    {
-      return 0.1;
+      return 0;
    }
 }
 

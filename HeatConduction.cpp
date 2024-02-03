@@ -6,46 +6,79 @@
 using namespace std;
 using namespace mfem;
 
+const double cv = 1.0;
+double kappa = 0.1;
+double IP = 10.;
+double P_ = 0.;
+double ComputeT(const double &E);
+void ComputeGradT(const double &E, const Vector &dE, Vector &dT);
+
+
+// The nonlinear function for GMRES test
+// M du/dt - D(u + dt * du/dt) = 0
+class EquationForm : public Operator
+{
+private:
+   SparseMatrix *mass;
+   NonlinearForm *diff;
+   double dt;
+   mutable Vector u0;
+   mutable Vector z;
+public:
+   EquationForm(SparseMatrix &ma, NonlinearForm &di, const Vector &u_, double dt_)
+      : Operator(u_.Size()), mass(&ma), diff(&di), dt(dt_), u0(u_) { }
+   // f(k) = M * k - D(u0 + dt * k) = 0
+   virtual void Mult(const Vector &k, Vector &y) const override
+   {
+      z.SetSize(u0.Size());
+      y.SetSize(u0.Size());
+      add(u0, dt, k, z);
+      diff->Mult(z, y);
+      y.Neg();
+// cout << "u0\n";
+// u0.Print();
+// cout << "D(u0+dt *k)\n";
+// y.Print(cout, 10);
+      mass->AddMult(k, y);
+// exit(0);
+   }
+};
+// Coefficient for diffusion
+class ConductionCoefficient : public Coefficient
+{
+protected:
+  GridFunction Ene;
+  int Component;
+
+public:
+  ConductionCoefficient(FiniteElementSpace &fes, Vector &E_, int comp = 1)
+   : Ene(&fes,E_), Component(comp) { }
+  virtual double Eval(ElementTransformation &Tr,
+                      const IntegrationPoint &ip)
+  {
+   //  return kappa;
+    double Et = Ene.GetValue(Tr, ip, Component);
+    double Tt = ComputeT(Et);
+    //  return 4. * kappa * pow(Tt,3);
+    return kappa * pow(Tt,2);
+  }
+};
 // class for solving dE/dt = div (K \nabla T), E = cv T + P_ T^4 (where \rho = 1)
 class ImplicitConduction : public TimeDependentOperator
 {
 protected:
+   const int dim;
    FiniteElementSpace &fespace;
    Array<int> ess_tdof_list; // this list remains empty for pure Neumann b.c.
 
    BilinearForm *M; // mass matrix
    NonlinearForm *D; // \int div(K \nabla T) b
    SparseMatrix Mmat;
-
-   // The nonlinear function for GMRES
-   // Use backward Euler, M(E^n+1 - E^n) / dt = D(E^n+1)
-   class EquationForm : public Operator
-   {
-   private:
-      SparseMatrix *mass;
-      NonlinearForm *diff;
-      double dt;
-      mutable Vector E;
-      mutable Vector z;
-   public:
-      EquationForm(SparseMatrix &ma, NonlinearForm &di, const Vector &u_, double dt_)
-         : Operator(u_.Size()), mass(&ma), diff(&di)
-           { dt = dt_; E = u_; }
-      // f(k) = M(k - E) - dt D(k) = 0
-      virtual void Mult(const Vector &k, Vector &y) const override
-      {
-         z.SetSize(E.Size());
-         diff->Mult(k, y);
-         y *= -dt;
-         subtract(k, E, z);
-         mass->AddMult(z, y);
-      }
-   };
    EquationForm *F; // form the system F(E) = M(dE/dt) - D(E + dt dE/dt) = 0
    double current_dt;
 
-   GMRESSolver T_solver; // Implicit solver for F(E) = 0
-   DSmoother T_prec;  // Preconditioner for the implicit solver
+   NonlinearGMRES T_solver; // Implicit solver for F(E) = 0
+   // DSmoother T_prec;  // Preconditioner for the implicit solver
 
    double kappa, P;
 
@@ -66,18 +99,15 @@ public:
    virtual ~ImplicitConduction();
 };
 
-double ComputeT(const double &E);
-void ComputeGradT(const double &E, const Vector &dE, Vector &dT);
-
 class DomainIntegrator : public NonlinearFormIntegrator
 {
-private:
+protected:
    const int dim;
    Coefficient *Q;
-   void GetState(const Vector &U, const FiniteElement &el, DenseMatrix &state);
 
 public:
-   DomainIntegrator(const int dim_, Coefficient &coeff) : dim(dim_), Q(&coeff) { }
+   DomainIntegrator(const int dim_) : dim(dim_), Q(NULL) { }
+   DomainIntegrator(const int dim_, Coefficient *coeff) : dim(dim_), Q(coeff) { }
    virtual void AssembleElementVector(const FiniteElement &el,
                                       ElementTransformation &Tr,
                                       const Vector &elfun, Vector &elvect);
@@ -85,7 +115,7 @@ public:
 
 class FaceIntegrator : public NonlinearFormIntegrator
 {
-private:
+protected:
    const double dim;
    Coefficient *Q;
    Vector shape1;
@@ -97,8 +127,11 @@ private:
    double fluxN;
 
 public:
-   FaceIntegrator(const int dim_, Coefficient &Q_)
-      : dim(dim_), nor(dim), Q(&Q_),
+   FaceIntegrator(const int dim_)
+      : dim(dim_), nor(dim), Q(NULL),
+        funval1(1), funval2(1), flux(dim) { }
+   FaceIntegrator(const int dim_, Coefficient *Q_)
+      : dim(dim_), nor(dim), Q(Q_),
         funval1(1), funval2(1), flux(dim) { }
 
    virtual void AssembleFaceVector(const FiniteElement &el1,
@@ -110,35 +143,17 @@ public:
 double InitialTemperature(const Vector &x);
 double InitialEnergy(const Vector &x);
 
-class NonlinearEq : public Operator
-{
-public:
-   NonlinearEq(int dim) : Operator(dim) { }
-   // y = f(x) = x^2 - 4
-   virtual void Mult(const Vector &x, Vector &y) const override
-   {
-      y.SetSize(1);
-      y(0) = sin(x(0)) - 1;
-   }
-};
 
-const int dim = 2;
-const double cv = 1.0;
-double kappa = 0.1;
-double IP = 10.;
-double P_ = 0.;
-
-double ComputeK(const double &T);
 int main(int argc, char *argv[])
 {
    // 1. Parse command-line options.
-   const char *mesh_file = "./2D.mesh";
+   const char *mesh_file = "./1D.mesh";
    int ref_levels = 0;
    int order = 2;
    int ode_solver_type = 1;
    double t_final = 0.1;
    double dt = 1.0e-3;
-   bool visualization = true;
+   bool visualization = false;
    bool visit = false;
    int vis_steps = 5;
 
@@ -222,21 +237,6 @@ int main(int argc, char *argv[])
       mesh->UniformRefinement();
    }
 
-NonlinearEq *f = new NonlinearEq(1);
-NonlinearGMRES g_solver;
-g_solver.SetRelTol(0.0);
-g_solver.SetAbsTol(1e-7);
-g_solver.SetMaxIter(30);
-g_solver.SetPrintLevel(0);
-g_solver.SetMaxKrylovIter(2);
-g_solver.SetOperator(*f);
-Vector x(1), y(1);
-x = 1.;
-g_solver.Mult(x,y);
-y.Print();
-exit(0);
-
-
    // 5. Define the vector finite element space representing the current and the
    //    initial temperature, u_ref.
    // H1_FECollection fe_coll(order, dim);
@@ -246,20 +246,19 @@ exit(0);
    int fe_size = fespace.GetTrueVSize();
    cout << "Number of temperature unknowns: " << fe_size << endl;
 
-   GridFunction u_gf(&fespace);
+   GridFunction E_gf(&fespace);
 
    // 6. Set the initial conditions for u. All boundaries are considered
    //    natural.
-   FunctionCoefficient u_0(InitialTemperature);
-   u_gf.ProjectCoefficient(u_0);
-   Vector u;
-   u_gf.GetTrueDofs(u);
+   FunctionCoefficient E_0(InitialEnergy);
+   E_gf.ProjectCoefficient(E_0);
+   Vector E;
+   E_gf.GetTrueDofs(E);
 
    // 7. Initialize the conduction operator and the visualization.
-   // ConductionOperator oper(*fespace, kappa, u);
-   ImplicitConduction oper(fespace, kappa, P_, u);
+   ImplicitConduction oper(fespace, kappa, P_, E);
 
-   u_gf.SetFromTrueDofs(u);
+   E_gf.SetFromTrueDofs(E);
 
    {
       ofstream omesh("./HeatConduction.mesh");
@@ -267,11 +266,11 @@ exit(0);
       mesh->Print(omesh);
       ofstream osol("./HeatConduction-init.gf");
       osol.precision(precision);
-      u_gf.Save(osol);
+      E_gf.Save(osol);
    }
 
    VisItDataCollection visit_dc("HeatConduction", mesh);
-   visit_dc.RegisterField("Energy", &u_gf);
+   visit_dc.RegisterField("Energy", &E_gf);
    if (visit)
    {
       visit_dc.SetCycle(0);
@@ -295,7 +294,7 @@ exit(0);
       else
       {
          sout.precision(precision);
-         sout << "solution\n" << *mesh << u_gf;
+         sout << "solution\n" << *mesh << E_gf;
          sout << "pause\n";
          sout << flush;
          cout << "GLVis visualization paused."
@@ -316,17 +315,17 @@ exit(0);
          last_step = true;
       }
 
-      ode_solver->Step(u, t, dt);
+      ode_solver->Step(E, t, dt);
 
       if (last_step || (ti % vis_steps) == 0)
       {
          cout << "step " << ti << ", t = " << t << endl;
 
-         u_gf.SetFromTrueDofs(u);
+         E_gf.SetFromTrueDofs(E);
 
          if (visualization)
          {
-            sout << "solution\n" << *mesh << u_gf << flush;
+            sout << "solution\n" << *mesh << E_gf << flush;
          }
 
          if (visit)
@@ -336,7 +335,7 @@ exit(0);
             visit_dc.Save();
          }
       }
-      oper.SetParameters(u);
+      oper.SetParameters(E);
    }
 
    // 9. Save the final solution. This output can be viewed later using GLVis:
@@ -344,7 +343,7 @@ exit(0);
    {
       ofstream osol(outputname);
       osol.precision(precision);
-      u_gf.Save(osol);
+      E_gf.Save(osol);
    }
 
    // 10. Free the used memory.
@@ -357,7 +356,7 @@ exit(0);
 ImplicitConduction::ImplicitConduction(FiniteElementSpace &f, const double kap,
                                        const double _P, const Vector &u)
    : TimeDependentOperator(f.GetTrueVSize(), 0.0), fespace(f), M(NULL), D(NULL),
-     F(NULL), current_dt(0.0), z(height)
+     F(NULL), current_dt(0.0), z(height), dim(f.GetMesh()->SpaceDimension())
 {
    const double rel_tol = 1e-8;
 
@@ -371,9 +370,10 @@ ImplicitConduction::ImplicitConduction(FiniteElementSpace &f, const double kap,
 
    T_solver.iterative_mode = false;
    T_solver.SetRelTol(rel_tol);
-   T_solver.SetAbsTol(0.0);
-   T_solver.SetMaxIter(100);
+   T_solver.SetAbsTol(1e-7);
+   T_solver.SetMaxIter(10);
    T_solver.SetPrintLevel(0);
+   T_solver.SetMaxKrylovIter(15);
    // T_solver.SetPreconditioner(T_prec);
 
    SetParameters(u);
@@ -388,7 +388,7 @@ void ImplicitConduction::ImplicitSolve(const double dt,
                                        const Vector &u, Vector &du_dt)
 {
    // Solve F(du/dt) = 0, F(du/dt) = M du/dt - D(u + dt * du/dt)
-   SetParameters(u);
+   // SetParameters(u);
    if (!F)
    {
       F = new EquationForm(Mmat, *D, u, dt);
@@ -397,27 +397,20 @@ void ImplicitConduction::ImplicitSolve(const double dt,
    }
    MFEM_VERIFY(dt == current_dt, "");
    Vector b(fespace.GetTrueVSize());
-   b = 1.;
+   b = 0.;
    T_solver.Mult(b, du_dt);
 }
 
 void ImplicitConduction::SetParameters(const Vector &u)
 {
-   GridFunction K_gf(&fespace);
-   K_gf.SetFromTrueDofs(u);
-   for (int i = 0; i < K_gf.Size(); i++)
-   {
-      // K_gf(i) = kappa + alpha*K_gf(i);
-      K_gf(i) = ComputeK(K_gf(i));
-   }
-
+   Vector *sptr = const_cast<Vector*>(&u);
+   ConductionCoefficient *coeff = new ConductionCoefficient(fespace,*sptr);
+   
    delete D;
    D = new NonlinearForm(&fespace);
 
-   GridFunctionCoefficient u_coeff(&K_gf);
-
-   D->AddDomainIntegrator(new DomainIntegrator(dim, u_coeff));
-   D->AddInteriorFaceIntegrator(new FaceIntegrator(dim, u_coeff));
+   D->AddDomainIntegrator(new DomainIntegrator(dim, coeff));
+   D->AddInteriorFaceIntegrator(new FaceIntegrator(dim, coeff));
    delete F;
    F = NULL; // re-compute T on the next ImplicitSolve
 }
@@ -439,12 +432,13 @@ void DomainIntegrator::AssembleElementVector(const FiniteElement &el,
 
   elvect.SetSize(dof);
   elvect = 0.0;
-  DenseMatrix elvect_mat(elvect.GetData(), dof, 1);
+//   DenseMatrix elvect_mat(elvect.GetData(), dof, 1);
 
   Vector shape(dof);
   DenseMatrix dshape(dof,dim), gshape(dof,dim);
-  DenseTensor flux;
+//   DenseTensor flux;
   DenseMatrix Jadj(dim); // J^*
+  Vector dT, dE(dim);
   double w;
 
   int intorder = 2 * el.GetOrder();
@@ -453,34 +447,30 @@ void DomainIntegrator::AssembleElementVector(const FiniteElement &el,
   // Note elfun here is just E
   for (int i = 0; i < ir->GetNPoints(); i++) {
     const IntegrationPoint &ip = ir->IntPoint(i);
+    Tr.SetIntPoint(&ip);
 
     el.CalcShape(ip, shape);
     double E = elfun * shape;
     el.CalcDShape(ip, dshape); // derivative on reference cell
-    Vector dE(dim);
     dshape.MultTranspose(elfun, dE);
 
-    Tr.SetIntPoint(&ip);
     CalcAdjugate(Tr.Jacobian(), Jadj);
     w = Tr.Weight();
     w = ip.weight / w;
-   //  if (Q) {
-   //    w *= Q->Eval(Tr, ip);
-   //  }
-   double T = ComputeT(E);
-   w *= ComputeK(T);
+    if (Q) {
+      w *= Q->Eval(Tr, ip);
+    }
 
     gshape.SetSize(dshape.Height(), dshape.Width());
     Mult(dshape, Jadj, gshape); // \nabla_x b |J|
 
-    Vector dT;
     ComputeGradT(E, dE, dT);
     // \nabla_x T = \nabla_\xi T Jadj / |J|
     Jadj.MultTranspose(dT, dT);
 
-    dT *= w;
-    gshape.AddMult(dT, elvect);
+    gshape.AddMult(dT, elvect, w);
   } /* for (int i = 0; i < IntRule->GetNPoints(); i++) */
+  elvect.Neg();
 }
 
 void FaceIntegrator::AssembleFaceVector(const FiniteElement &el1,
@@ -501,16 +491,20 @@ void FaceIntegrator::AssembleFaceVector(const FiniteElement &el1,
    DenseMatrix elfun1_mat(elfun.GetData(), dof1, 1);
    DenseMatrix elfun2_mat(elfun.GetData() + dof1, dof2, 1);
    Vector Evec1(elfun.GetData(), dof1);
-   Vector Evec2(elfun.GetData(),dof2);
+   Vector Evec2(elfun.GetData() + dof1, dof2);
 
    Vector elvect1_mat(elvect.GetData(), dof1);
    Vector elvect2_mat(elvect.GetData() + dof1, dof2);
 
-   DenseMatrix dshape1(dof1,dim), dshape2(dof1,dim);
+   DenseMatrix dshape1(dof1,dim), dshape2(dof2,dim);
+   Vector dshape1dn(dof1), dshape2dn(dof2);
    DenseMatrix Jadj1(dim), Jadj2(dim);
+   Vector dE1(dim), dE2(dim), dT1(dim), dT2(dim);
+   double wq;
+   Vector ni(dim);
 
    // Integration order calculation from DGTraceIntegrator
-   int intorder; // 这个intorder是积分的阶数
+   int intorder;
    if (Tr.Elem2No >= 0)
       intorder = (min(Tr.Elem1->OrderW(), Tr.Elem2->OrderW()) +
                   2*max(el1.GetOrder(), el2.GetOrder()));
@@ -530,45 +524,61 @@ void FaceIntegrator::AssembleFaceVector(const FiniteElement &el1,
 
       Tr.SetAllIntPoints(&ip); // set face and element int. points
 
-      // Calculate basis functions on both elements at the face
-      el1.CalcShape(Tr.GetElement1IntPoint(), shape1);
-      el2.CalcShape(Tr.GetElement2IntPoint(), shape2);
-
-      elfun1_mat.MultTranspose(shape1, funval1);
-      elfun2_mat.MultTranspose(shape2, funval2);
+      // Access the neighboring elements' integration points
+      // Note: eip2 will only contain valid data if Elem2 exists
+      const IntegrationPoint &eip1 = Tr.GetElement1IntPoint();
+      const IntegrationPoint &eip2 = Tr.GetElement2IntPoint();
 
       // Get the normal vector and the flux on the face
-      CalcOrtho(Tr.Jacobian(), nor);
+      if (dim == 1)
+      {
+         nor(0) = 2*eip1.x - 1.0;
+      }
+      else
+      {
+         CalcOrtho(Tr.Jacobian(), nor);
+         // nor /= nor.Norml2();
+      }
+
+      // Calculate basis functions on both elements at the face
+      el1.CalcShape(eip1, shape1);
+      el2.CalcShape(eip2, shape2);
+      el1.CalcDShape(eip1, dshape1);
+      el2.CalcDShape(eip2, dshape2);
+
+      // funval = E here
+      elfun1_mat.MultTranspose(shape1, funval1);
+      elfun2_mat.MultTranspose(shape2, funval2);
+      dshape1.MultTranspose(elfun1_mat.GetColumn(0), dE1);
+      dshape2.MultTranspose(elfun2_mat.GetColumn(0), dE2);
+
       
-      // Get flux = {\nabla T} + mu [T]
-      // here funval = E
+      // Get flux = {\nabla T} - mu [T]
+      // 1. for {\nabla T}
       double T1 = ComputeT(funval1(0));
       double T2 = ComputeT(funval2(0));
-      double mu = IP * Tr.Weight() / Tr.Elem1->Weight();
-      el1.CalcDShape(Tr.GetElement1IntPoint(), dshape1);
-      el2.CalcDShape(Tr.GetElement2IntPoint(), dshape2);
+
       CalcAdjugate(Tr.Elem1->Jacobian(), Jadj1);
       CalcAdjugate(Tr.Elem2->Jacobian(), Jadj2);
-      Vector dE1(dim), dE2(dim), dT1(dim), dT2(dim);
-      Jadj1.MultTranspose(Evec1, dE1);
-      Jadj2.MultTranspose(Evec2, dE2);
+      Jadj1.MultTranspose(dE1, dE1);
+      Jadj2.MultTranspose(dE2, dE2);
       ComputeGradT(funval1(0), dE1, dT1);
       ComputeGradT(funval2(0), dE2, dT2);
-      // \nabla_x T = \nabla_xi T Jadj / |J|
-      Jadj1.MultTranspose(dT1, dT1);
-      dT1 /= Tr.Elem1->Weight();
-      Jadj2.MultTranspose(dT2, dT2);
-      dT2 /= Tr.Elem2->Weight();
+
+      // {K \nabla T} [B]
+      if (Q) {
+         dT1 *= Q->Eval(*Tr.Elem1, eip1);
+         dT2 *= Q->Eval(*Tr.Elem2, eip2);
+      }
       add(0.5, dT1, dT2, flux);
-      add(flux, mu*(T1-T2), nor, flux); // [T] = T1 nor1 + T2 nor2
 
       fluxN = flux * nor;
 
-
-      double w = ip.weight;
-      // if (Q) { w *= Q->Eval(Tr, ip); }
-      double K = ComputeK(T1);
-      w *= K;
+      double w = ip.weight / Tr.Elem1->Weight();
+      if (dof2) {
+         w += ip.weight / Tr.Elem2->Weight();
+         w /= 2.;
+      }
 
       fluxN *= w;
 
@@ -580,19 +590,66 @@ void FaceIntegrator::AssembleFaceVector(const FiniteElement &el1,
       {
          elvect2_mat(s) -= fluxN * shape2(s);
       }
+
+      // [T] {K \nabla B}
+      Jadj1.MultTranspose(nor, ni);
+      dshape1.Mult(ni, dshape1dn);
+      Jadj2.MultTranspose(nor, ni);
+      dshape2.Mult(ni, dshape2dn);
+      dshape1dn *= w;
+      dshape2dn *= w;
+      if (Q) {
+         dshape1dn *= Q->Eval(*Tr.Elem1, eip1);
+         dshape2dn *= Q->Eval(*Tr.Elem2, eip2);
+      }
+      for (int s = 0; s < dof1; s++)
+      {
+         elvect1_mat(s) += 0.5 * (T1 - T2) * dshape1dn(s); // 注意N的方向，elvect=\int f_k*n b_s
+      }
+      for (int s = 0; s < dof2; s++)
+      {
+         elvect2_mat(s) -= 0.5 * (T1 - T2) * dshape2dn(s);
+      }
+
+      // 2. for -mu [T]
+      double mu = ip.weight / Tr.Elem1->Weight();
+      if (dof2) { mu /= 2.; }
+      if (Q) {
+         mu *= Q->Eval(*Tr.Elem1, eip1);
+      }
+      ni.Set(mu, nor);
+      wq = ni * nor;
+
+      if (dof2) {
+         double mu2 = Tr.Elem2->Weight();
+         mu = ip.weight /2./Tr.Elem2->Weight();
+         if (Q) {
+            mu *= Q->Eval(*Tr.Elem2, eip2);
+         }
+         ni.Set(mu, nor);
+      }
+      wq += ni * nor;
+      mu = -wq * IP;
+
+      for (int s = 0; s < dof1; s++)
+      {
+         elvect1_mat(s) += mu * (T1 - T2) * shape1(s); // 注意N的方向，elvect=\int f_k*n b_s
+      }
+      for (int s = 0; s < dof2; s++)
+      {
+         elvect2_mat(s) -= mu * (T1 - T2) * shape2(s);
+      }
    }
 }
 
 double InitialTemperature(const Vector &x)
 {
-   if (fabs(x(0)) < 0.1 && fabs(x(1)) < 0.1)
+   if (fabs(x(0)) < 1./100. && fabs(x(1)) < 0.1)
    {
-      return 10.0;
+      // return 5.0;
+      return 0.5 * 100;
    }
-   else
-   {
-      return 0.1;
-   }
+   return 0.;
 }
 
 double InitialEnergy(const Vector &x)
@@ -636,11 +693,4 @@ void ComputeGradT(const double &E, const Vector &dE, Vector &dT)
    double T = ComputeT(E);
    dT = dE;
    dT /= (cv + 4 * P_ *pow(T,3));
-}
-
-double ComputeK(const double &T)
-{
-   double K;
-   K = kappa;
-   return K;
 }
